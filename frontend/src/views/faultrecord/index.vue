@@ -84,7 +84,7 @@ import type { EntryRow } from '@/data/types'
 const meta = moduleMeta('faultrecord')
 const columns = ["录波编号", "故障线路", "故障类型", "故障电流", "故障时间", "分析人", "分析结论", "录波状态"]
 const actions = ["提交分析", "确认定性", "归档录波"]
-const statuses = ["待分析", "分析中", "已定性", "已归档"]
+const statuses = ["待分析", "分析中", "已定性", "待归档", "已归档"]
 const stats = [{"label": "待分析录波", "value": 0}, {"label": "分析中录波", "value": 0}, {"label": "本月归档数", "value": 0}]
 
 const rows = ref<EntryRow[]>([])
