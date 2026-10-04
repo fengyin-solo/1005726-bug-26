@@ -55,6 +55,7 @@
             >
               {{ action }}
             </button>
+            <button class="link" type="button" @click="openDetail(row)">明细</button>
           </td>
         </tr>
         <tr v-if="!rows.length">
@@ -63,8 +64,28 @@
       </tbody>
     </table>
 
+    <aside v-if="selected" class="detail-panel">
+      <header class="detail-head">
+        <h3>统计明细 · {{ selected['统计编号'] ?? '—' }}</h3>
+        <button class="link" type="button" @click="selected = null">收起</button>
+      </header>
+      <dl class="detail-grid">
+        <div v-for="column in columns" :key="column" class="detail-item">
+          <dt>{{ column }}</dt>
+          <dd>{{ selected[column] ?? '—' }}</dd>
+        </div>
+        <div class="detail-item">
+          <dt>当前状态</dt>
+          <dd>{{ selected.status }}</dd>
+        </div>
+      </dl>
+    </aside>
+
     <footer class="page-foot">
-      <span>共 {{ total }} 条保护动作统计记录</span>
+      <span>
+        共 {{ total }} 条保护动作统计记录
+        <template v-if="suppressed > 0">（同线路同月重复提交的 {{ suppressed }} 条只算第一次，未计入）</template>
+      </span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
   </section>
@@ -85,13 +106,33 @@ const meta = moduleMeta('tripstat')
 const columns = ["统计编号", "所属线路", "动作次数", "正确动作次数", "误动次数", "统计月份", "统计人", "统计状态"]
 const actions = ["提交统计", "确认汇总", "送交复核"]
 const statuses = ["待统计", "统计中", "已汇总", "已复核"]
-const stats = [{"label": "待统计线路", "value": 0}, {"label": "已汇总线路", "value": 0}, {"label": "本月误动次数", "value": 0}]
 
 const rows = ref<EntryRow[]>([])
 const total = ref(0)
+const suppressed = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+// 明细面板直接引用列表里的同一条记录，统计人等字段与列表是同一份数据。
+const selected = ref<EntryRow | null>(null)
+// 统计卡片按全量口径数据算，不随筛选条件变化。
+const scopedAll = ref<EntryRow[]>([])
+
+const stats = computed(() => {
+  const month = new Date().toISOString().slice(0, 7)
+  const items = scopedAll.value
+  return [
+    { label: '待统计线路', value: items.filter((row) => String(row.status) === '待统计').length },
+    { label: '已汇总线路', value: items.filter((row) => String(row.status) === '已汇总').length },
+    {
+      label: '本月误动次数',
+      value: items
+        .filter((row) => String(row['统计月份'] ?? '') === month)
+        .reduce((sum, row) => sum + (Number(row['误动次数']) || 0), 0),
+    },
+  ]
+})
+
 const statusSummary = computed(() =>
   statuses.map((status: string) => ({
     status,
@@ -112,6 +153,10 @@ function openCreate() {
   errorMessage.value = '动作统计登记入口尚未接入审批流'
 }
 
+function openDetail(row: EntryRow) {
+  selected.value = row
+}
+
 function runAction(action: string, row: EntryRow) {
   errorMessage.value = ''
   const result = applyAction(meta.key, Number(row.id), action)
@@ -128,6 +173,13 @@ function reload() {
     const payload = listEntries(meta.key, filters.value)
     rows.value = payload.items
     total.value = payload.total
+    suppressed.value = payload.suppressed ?? 0
+    scopedAll.value = listEntries(meta.key).items
+    // 明细面板重新指向刷新后的同一条记录，统计人等字段始终与列表同源。
+    if (selected.value) {
+      const currentId = Number(selected.value.id)
+      selected.value = payload.items.find((row) => Number(row.id) === currentId) ?? null
+    }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '保护动作统计列表读取失败'
   }

@@ -1,5 +1,16 @@
 import { MODULE_BY_KEY } from '@/data/modules'
 import { allRows, listRows, resetRows, saveRows } from '@/data/local-store'
+import {
+  ACTION_SUBMIT,
+  ACTION_SUMMARIZE,
+  FAULTRECORD_KEY,
+  STATUS_SUMMARIZED,
+  TRIPSTAT_KEY,
+  dedupeTripstatRows,
+  isTripstatDuplicate,
+  syncSummarizedToFaultrecord,
+  validateTripstatCounts,
+} from '@/data/tripstat-rules'
 import type { ActionResult, EntryRow, ModuleMeta, OverviewResult, PageResult } from '@/data/types'
 
 // 会写进数据的「往回走」动作：命中就把这条记录标成异常态，看板上能一眼看出来。
@@ -24,8 +35,30 @@ export function filterRows(rows: EntryRow[], filters: Record<string, string>): E
 }
 
 export function listEntries(key: string, filters: Record<string, string> = {}): PageResult {
-  const matched = filterRows(listRows(key), filters)
-  return { items: matched, total: matched.length, page: 1, size: matched.length }
+  const stored = listRows(key)
+  // 动作统计的口径：同一线路同月只认第一次提交，列表与合计都不重复计算。
+  const scoped = key === TRIPSTAT_KEY ? dedupeTripstatRows(stored) : stored
+  const matched = filterRows(scoped, filters)
+  return {
+    items: matched,
+    total: matched.length,
+    page: 1,
+    size: matched.length,
+    suppressed: stored.length - scoped.length,
+  }
+}
+
+// 动作统计的提交/汇总卡口：重复提交只算第一次，误动次数超动作次数或超范围的一律挡回。
+function guardTripstatAction(rows: EntryRow[], index: number, action: string): string | null {
+  const row = rows[index]
+  if (isTripstatDuplicate(row, rows)) {
+    return '同一线路同一统计月份已有统计记录，重复提交只算第一次，本次不计入'
+  }
+  const message = validateTripstatCounts(row)
+  if (message) {
+    return action === ACTION_SUMMARIZE ? `${message}，已挡回保存，不允许保存成已汇总` : `${message}，已挡回保存`
+  }
+  return null
 }
 
 export function runAction(key: string, id: number, action: string): ActionResult {
@@ -43,6 +76,12 @@ export function runAction(key: string, id: number, action: string): ActionResult
   if (current === target) {
     return { ok: false, message: `${meta.entity}已经是「${target}」，不用重复操作` }
   }
+  if (key === TRIPSTAT_KEY && (action === ACTION_SUBMIT || action === ACTION_SUMMARIZE)) {
+    const blocked = guardTripstatAction(rows, index, action)
+    if (blocked) {
+      return { ok: false, message: blocked }
+    }
+  }
   const lastStatus = meta.statuses[meta.statuses.length - 1]
   const updated: EntryRow = {
     ...rows[index],
@@ -53,6 +92,13 @@ export function runAction(key: string, id: number, action: string): ActionResult
   const next = [...rows]
   next[index] = updated
   saveRows(key, next)
+  // 汇总完成的结果同步到故障录波的待归档清单，同一条统计只同步一次。
+  if (key === TRIPSTAT_KEY && target === STATUS_SUMMARIZED) {
+    const synced = syncSummarizedToFaultrecord(next, listRows(FAULTRECORD_KEY))
+    if (synced.added > 0) {
+      saveRows(FAULTRECORD_KEY, synced.rows)
+    }
+  }
   return { ok: true, message: `${meta.entity}已${action}，当前状态「${target}」` }
 }
 
@@ -65,8 +111,12 @@ export function exportEntries(key: string): { filename: string; content: string 
   const meta = moduleMeta(key)
   const header = ['编号', ...meta.fields, '当前状态']
   const lines = [header.join(',')]
-  for (const row of listRows(key)) {
-    lines.push([row.id, ...meta.fields.map((field) => row[field] ?? ''), row.status].join(','))
+  // 导出沿用列表的同一份口径：动作统计同线路同月只导出第一次提交的记录。
+  const scoped = key === TRIPSTAT_KEY ? dedupeTripstatRows(listRows(key)) : listRows(key)
+  for (const row of scoped) {
+    // 每个字段都显式转成字符串，避免误动次数这类列因非字符串值在 join 时整列丢失。
+    const cells = [row.id, ...meta.fields.map((field) => row[field] ?? ''), row.status]
+    lines.push(cells.map((cell) => String(cell)).join(','))
   }
   return { filename: `${meta.name}-清单.csv`, content: `\uFEFF${lines.join('\n')}` }
 }

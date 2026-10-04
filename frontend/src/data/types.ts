@@ -25,6 +25,8 @@ export type PageResult = {
   total: number
   page: number
   size: number
+  /** 按口径被合并掉的重复记录数（目前只有动作统计会用） */
+  suppressed?: number
 }
 
 export type ActionResult = {
